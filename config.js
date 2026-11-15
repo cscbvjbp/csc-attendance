@@ -7,4 +7,8 @@ const firebaseConfig = {
   appId: "1:299253904028:web:02519740f174f6d0207359"
 };
 
-window.CSC_CONFIG = { firebase: firebaseConfig };
+window.CSC_CONFIG = { 
+  firebase: firebaseConfig,
+  addminDomin: "cscbalvidyalaya.app",
+  staffDomin: "staff.cscbalvidyalaya.app"
+};
