@@ -1,12 +1,5 @@
 rules_version = '2';
 
-// CSC Bal Vidyalaya - Staff Attendance
-// Paste this whole file in Firebase > Firestore Database > Rules, then press Publish.
-//
-// To add another admin, add one more email to the list in isAdmin(),
-// for example: ['admin@cscbalvidyalaya.app', 'principal@cscbalvidyalaya.app']
-// and create that user in Firebase > Authentication > Users.
-
 service cloud.firestore {
   match /databases/{database}/documents {
 
@@ -15,7 +8,7 @@ service cloud.firestore {
     }
 
     function isAdmin() {
-      return signedIn() && request.auth.token.email in ['admin@cscbalvidyalaya.app'];
+      return signedIn() && request.auth.token.email in ['admin@cscbalvidyalaya.app', 'principal@cscbalvidyalaya.app'];
     }
 
     function mapped() {
