@@ -2,16 +2,18 @@
 (function(){
 'use strict';
 var CFG=window.CSC_CONFIG||{};
+var STAFF_DOMAIN=CFG.staffDomain||'staff.cscbalvidyalaya.app';
+var ADMIN_DOMAIN=CFG.adminDomain||'cscbalvidyalaya.app';
 function $(s,e){return (e||document).querySelector(s)}
 function $$(s,e){return Array.prototype.slice.call((e||document).querySelectorAll(s))}
 function esc(s){return String(s==null?'':s).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]})}
 function pad(n){return String(n).padStart(2,'0')}
 function dstr(d){return d.getFullYear()+'-'+pad(d.getMonth()+1)+'-'+pad(d.getDate())}
-function pdate(s){var p=s.split('-').map(Number);return new Date(p[0],p[1]-1,p[2])}
+function pdate(s){var p=String(s||'').split('-').map(Number);return new Date(p[0],(p[1]||1)-1,p[2]||1)}
 function mstr(d){return dstr(d).slice(0,7)}
 function hm(iso){return iso?new Date(iso).toLocaleTimeString('en-IN',{hour:'numeric',minute:'2-digit',hour12:true}):'—'}
-function fdate(s,o){return pdate(s).toLocaleDateString('en-IN',o||{day:'numeric',month:'short',year:'numeric'})}
-function tmins(t){var p=String(t||'0:0').split(':').map(Number);return p[0]*60+(p[1]||0)}
+function fdate(s,o){return s?pdate(s).toLocaleDateString('en-IN',o||{day:'numeric',month:'short',year:'numeric'}):'—'}
+function tmins(t){var p=String(t||'0:0').split(':').map(Number);return (p[0]||0)*60+(p[1]||0)}
 function rndStr(n,alpha){var a=new Uint32Array(n);crypto.getRandomValues(a);var s='';for(var i=0;i<n;i++)s+=alpha[a[i]%alpha.length];return s}
 var ALPHA='abcdefghjkmnpqrstuvwxyz23456789';
 function rndPin(){return rndStr(6,'0123456789')}
@@ -20,23 +22,29 @@ var LEAVE_TYPES=['Casual leave','Sick leave','Earned leave','Maternity / paterni
 var DEF={startTime:'08:00',endTime:'14:00',graceMins:10,offDays:[0],hasQr:false};
 
 var toastT=0;
-function toast(msg,kind){var t=$('#toast');t.textContent=msg;t.className='toast show '+(kind||'');clearTimeout(toastT);toastT=setTimeout(function(){t.className='toast'},3600)}
-function block(title,text){$('#loading').hidden=true;$('#login').hidden=true;$('#blockTitle').textContent=title;$('#blockText').textContent=text;$('#block').hidden=false}
+function toast(msg,kind){var t=$('#toast');if(!t)return;t.textContent=msg;t.className='toast show '+(kind||'');clearTimeout(toastT);toastT=setTimeout(function(){t.className='toast'},3600)}
+function block(title,text){if($('#loading'))$('#loading').hidden=true;if($('#login'))$('#login').hidden=true;if($('#blockTitle'))$('#blockTitle').textContent=title;if($('#blockText'))$('#blockText').textContent=text;if($('#block'))$('#block').hidden=false}
 
 /* ---------- start-up checks ---------- */
 if(typeof firebase==='undefined'){block('Could not load','The app could not load Firebase. Check the internet connection and reload this page.');return}
-if(!CFG.firebase||!CFG.firebase.apiKey||/PASTE/.test(CFG.firebase.apiKey)){block('Setup is not finished','The Firebase details are missing in config.js. Follow the setup guide (SETUP-HINDI.md), then upload the files again.');return}
-firebase.initializeApp(CFG.firebase);
-var auth=firebase.auth(),fs=firebase.firestore();
+if(!CFG.firebase||!CFG.firebase.apiKey||/PASTE/.test(CFG.firebase.apiKey)){block('Setup is not finished','The Firebase details are missing in config.js. Follow the setup guide, then upload the files again.');return}
+var app=firebase.apps.length?firebase.app():firebase.initializeApp(CFG.firebase);
+var auth=app.auth(),fs=app.firestore();
 var TS=firebase.firestore.FieldValue.serverTimestamp;
 var secApp=null;
-function secAuth(){if(!secApp)secApp=firebase.initializeApp(CFG.firebase,'secondary');return secApp.auth()}
+function secAuth(){
+  if(!secApp){
+    var existing=firebase.apps.find(function(x){return x.name==='secondary'});
+    secApp=existing||firebase.initializeApp(CFG.firebase,'secondary');
+  }
+  return secApp.auth();
+}
 
 /* ---------- state ---------- */
 var S={role:null,me:null,staff:null,settings:null,settingsLoaded:false,qrValue:null,qrLoaded:false,
   today:dstr(new Date()),attToday:[],attMine:[],attMonth:[],attMonthFor:'',leaves:[],
   tab:null,view:null,repMonth:mstr(new Date()),mMonth:mstr(new Date()),scan:null,busy:false,
-  notes:{},lvFilter:'pending',expanded:{},confirmDel:null,fails:0,lockUntil:0,lmode:'staff',resolvedUid:null};
+  notes:{},lvFilter:'pending',expanded:{},confirmDel:null,fails:0,lockUntil:0,lmode:'staff',resolvedUid:null,keepMsg:null,seeding:false};
 
 /* ---------- subscriptions ---------- */
 var subs={};
@@ -57,7 +65,11 @@ var rq=0;
 function refresh(){if(rq)return;rq=requestAnimationFrame(function(){rq=0;renderChrome();if(S.view&&S.view.update)S.view.update()})}
 
 /* ---------- domain helpers ---------- */
-function cfg(){return Object.assign({},DEF,S.settings||{})}
+function cfg(){
+  var base=Object.assign({},DEF,S.settings||{});
+  base.offDays=Array.isArray(base.offDays)?base.offDays.map(Number):DEF.offDays.slice();
+  return base;
+}
 function isOff(date){return cfg().offDays.indexOf(pdate(date).getDay())>=0}
 function activeStaff(){return (S.staff||[]).filter(function(s){return s.active!==false})}
 function meRec(){return S.me}
@@ -73,7 +85,7 @@ function dayStatus(id,date,map){
   return {k:'absent'};
 }
 var CH={present:['good','Present'],late:['warn','Late'],leave:['info','On leave'],absent:['bad','Absent'],notin:['muted','Not in yet'],off:['muted','Weekly off'],future:['muted','—']};
-function chip(k){return '<span class="chip '+CH[k][0]+'">'+CH[k][1]+'</span>'}
+function chip(k){var c=CH[k]||CH.future;return '<span class="chip '+c[0]+'">'+c[1]+'</span>'}
 var LCH={pending:['warn','Pending'],approved:['good','Approved'],rejected:['bad','Rejected'],cancelled:['muted','Cancelled']};
 function lchip(s){var c=LCH[s]||LCH.pending;return '<span class="chip '+c[0]+'">'+c[1]+'</span>'}
 function countLeaveDays(from,to,half){
@@ -89,9 +101,11 @@ function shiftMonth(ym,k){var p=ym.split('-').map(Number);return mstr(new Date(p
 function greet(){var h=new Date().getHours();return h<12?'Good morning':h<17?'Good afternoon':'Good evening'}
 function csvCell(v){v=String(v==null?'':v);return /[",\n]/.test(v)?'"'+v.replace(/"/g,'""')+'"':v}
 function download(name,data,type){
+  if(!data)return;
   var blob=data instanceof Blob?data:new Blob([data],{type:type||'text/plain'});
-  var a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=name;document.body.appendChild(a);a.click();
-  setTimeout(function(){URL.revokeObjectURL(a.href);a.remove()},1500);
+  var url=URL.createObjectURL(blob);
+  var a=document.createElement('a');a.href=url;a.download=name;document.body.appendChild(a);a.click();
+  setTimeout(function(){URL.revokeObjectURL(url);a.remove()},1500);
 }
 
 /* ---------- script loader (QR reading library) ---------- */
@@ -112,7 +126,7 @@ function loadScript(key,test,urls){
 }
 function loadJsQR(){return loadScript('jsqr',function(){return typeof window.jsQR==='function'},['https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js','https://unpkg.com/jsqr@1.4.0/dist/jsQR.js','https://cdnjs.cloudflare.com/ajax/libs/jsQR/1.4.0/jsQR.min.js'])}
 
-/* ---------- reading a QR from a photo (used by admin upload and the photo fallback) ---------- */
+/* ---------- reading a QR from a photo ---------- */
 function fileToImage(file){
   return new Promise(function(res,rej){
     var fr=new FileReader();
@@ -124,6 +138,7 @@ async function decodeQR(file){
   var src=null;
   try{src=await createImageBitmap(file)}catch(e){try{src=await fileToImage(file)}catch(e2){return null}}
   var w0=src.width||src.naturalWidth,h0=src.height||src.naturalHeight;
+  if(!w0||!h0)return null;
   if('BarcodeDetector' in window){
     try{var det=new BarcodeDetector({formats:['qr_code']});var found=await det.detect(src);if(found&&found[0]&&found[0].rawValue)return String(found[0].rawValue)}catch(e){}
   }
@@ -170,7 +185,7 @@ async function buildPoster(){
   c.lineWidth=26;c.strokeStyle='#A223EA';rrect(c,26,26,W-52,H-52,70);c.stroke();
   c.lineWidth=8;c.strokeStyle='#F5A31C';rrect(c,70,70,W-140,H-140,44);c.stroke();
   var img=new Image();img.src='logo.jpg';try{await img.decode()}catch(e){}
-  c.drawImage(img,(W-330)/2,105,330,330);
+  if(img.complete&&img.naturalWidth)c.drawImage(img,(W-330)/2,105,330,330);
   c.textAlign='center';
   c.fillStyle='#A223EA';c.font='700 80px Poppins, Arial, sans-serif';c.fillText('STAFF ATTENDANCE',W/2,545);
   c.fillStyle='#27143D';c.font='600 40px Inter, Arial, sans-serif';c.fillText('Scan this QR in the attendance app',W/2,610);
@@ -209,7 +224,8 @@ function camFail(msg){
 async function scanFrame(v){
   if(SC.det){try{var r=await SC.det.detect(v);if(r&&r[0]&&r[0].rawValue)return String(r[0].rawValue)}catch(e){}}
   if(typeof window.jsQR!=='function')return null;
-  var w=Math.min(720,v.videoWidth),h=Math.round(v.videoHeight*w/v.videoWidth);
+  if(!v.videoWidth||!v.videoHeight)return null;
+  var w=Math.min(720,v.videoWidth),h=Math.max(1,Math.round(v.videoHeight*w/v.videoWidth));
   if(!SC.cv){SC.cv=document.createElement('canvas')}
   SC.cv.width=w;SC.cv.height=h;
   var cx=SC.cv.getContext('2d',{willReadFrequently:true});cx.drawImage(v,0,0,w,h);
@@ -219,19 +235,21 @@ async function scanFrame(v){
 function onScanned(val){
   stopScan();
   S.scan={value:String(val).trim(),at:Date.now()};
-  $('#scanMsg').textContent='';
+  var m=$('#scanMsg');if(m)m.textContent='';
   toast('QR scanned.','good');
   if(S.view&&S.view.update)S.view.update();
 }
 async function startScan(){
-  var msg=$('#scanMsg');msg.textContent='';
+  var msg=$('#scanMsg');if(msg)msg.textContent='';
   if(!navigator.mediaDevices||!navigator.mediaDevices.getUserMedia){camFail('This browser cannot open the camera. Take a photo of the QR instead.');return}
   loadJsQR();
   try{SC.stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:'environment'}},audio:false})}
   catch(e){camFail(e&&e.name==='NotAllowedError'?'Camera permission was denied. Allow the camera for this site in the browser settings, or take a photo of the QR instead.':'Could not open the camera. Take a photo of the QR instead.');return}
-  var v=$('#scanVideo');v.srcObject=SC.stream;
+  var v=$('#scanVideo');if(!v)return;
+  v.srcObject=SC.stream;
   try{await v.play()}catch(e){}
-  $('#scanPanel').hidden=false;$('#scanStart').hidden=true;
+  var p=$('#scanPanel'),b=$('#scanStart');
+  if(p)p.hidden=false;if(b)b.hidden=true;
   if(!SC.det&&'BarcodeDetector' in window){try{SC.det=new BarcodeDetector({formats:['qr_code']})}catch(e){SC.det=null}}
   function loop(ts){
     if(!SC.stream)return;
@@ -261,7 +279,7 @@ async function mark(kind){
   var me=meRec();if(!me||S.busy)return;
   if(!S.settings||!S.settings.hasQr){toast('Attendance is not set up yet. Please ask the school office.','bad');return}
   if(!scanOk()){toast('Scan the school QR first.','bad');return}
-  S.busy=true;S.view.update();
+  S.busy=true;if(S.view&&S.view.update)S.view.update();
   try{
     var s=cfg(),now=new Date(),nm=now.getHours()*60+now.getMinutes(),date=dstr(now);
     var ref=fs.doc('attendance/'+me.id+'_'+date);
@@ -270,7 +288,7 @@ async function mark(kind){
       if(cur&&cur.inAt){toast('You are already checked in.')}
       else{
         var late=nm>tmins(s.startTime)+Number(s.graceMins||0);
-        await ref.set({staffId:me.id,date:date,month:date.slice(0,7),inAt:TS(),outAt:null,late:late,lateMins:late?nm-tmins(s.startTime):0,early:false,qr:S.scan.value});
+        await ref.set({staffId:me.id,date:date,month:date.slice(0,7),inAt:TS(),outAt:null,late:late,lateMins:late?Math.max(0,nm-tmins(s.startTime)):0,early:false,qr:S.scan.value});
         toast(late?'Checked in at '+hm(now.toISOString())+' (late).':'Checked in at '+hm(now.toISOString())+'.','good');
       }
     }else{
@@ -322,7 +340,7 @@ V['staff:today']={
   update:function(){
     var me=meRec();if(!me||!$('#sd'))return;
     $('#sd').textContent=new Date().toLocaleDateString('en-IN',{weekday:'long',day:'numeric',month:'long',year:'numeric'});
-    $('#sn').textContent=greet()+', '+me.name.split(' ')[0];
+    $('#sn').textContent=greet()+', '+String(me.name||'Staff').split(' ')[0];
     $('#sc').textContent=new Date().toLocaleTimeString('en-IN',{hour:'numeric',minute:'2-digit',hour12:true});
     var ok=scanOk();$('#scanOk').hidden=!ok;$('#scanNeed').hidden=ok;
     var a=S.attMine.find(function(x){return x.date===S.today});
@@ -352,8 +370,8 @@ V['staff:month']={
   mount:function(el){
     el.innerHTML='<div class="narrow stack"><div class="stepper"><button class="btn ghost small" id="mp" type="button" aria-label="Previous month">‹</button><b id="ml"></b><button class="btn ghost small" id="mn" type="button" aria-label="Next month">›</button></div>'+
     '<div class="stats" id="mstats"></div><section class="card"><div id="mlist"></div></section></div>';
-    $('#mp').onclick=function(){S.mMonth=shiftMonth(S.mMonth,-1);S.view.update()};
-    $('#mn').onclick=function(){if(S.mMonth<mstr(new Date())){S.mMonth=shiftMonth(S.mMonth,1);S.view.update()}};
+    $('#mp').onclick=function(){S.mMonth=shiftMonth(S.mMonth,-1);if(S.view&&S.view.update)S.view.update()};
+    $('#mn').onclick=function(){if(S.mMonth<mstr(new Date())){S.mMonth=shiftMonth(S.mMonth,1);if(S.view&&S.view.update)S.view.update()}};
   },
   update:function(){
     var me=meRec();if(!me||!$('#ml'))return;
@@ -407,7 +425,7 @@ V['staff:leave']={
     };
     $('#myLeaves').onclick=async function(e){
       var b=e.target.closest('[data-cancel]');if(!b)return;b.disabled=true;
-      try{await fs.doc('leaves/'+b.dataset.cancel).update({status:'cancelled',decidedAt:new Date().toISOString()});toast('Request cancelled.')}catch(x){toast('Could not cancel.','bad')}
+      try{await fs.doc('leaves/'+b.dataset.cancel).update({status:'cancelled',decidedAt:new Date().toISOString()});toast('Request cancelled.')}catch(x){toast('Could not cancel.','bad');b.disabled=false}
     };
   },
   update:function(){
@@ -458,7 +476,7 @@ function nextStaffId(){
   var max=0;(S.staff||[]).forEach(function(s){var m=/^CSC(\d+)$/.exec(s.id);if(m)max=Math.max(max,Number(m[1]))});
   return 'CSC'+String(max+1).padStart(3,'0');
 }
-function staffEmail(id){return id.toLowerCase()+'.'+rndStr(6,ALPHA)+'@'+CFG.staffDomain}
+function staffEmail(id){return id.toLowerCase()+'.'+rndStr(6,ALPHA)+'@'+STAFF_DOMAIN}
 async function createAuthUser(email,pin){
   var a=secAuth(),cred=await a.createUserWithEmailAndPassword(email,pin);
   var uid=cred.user.uid;await a.signOut();return uid;
@@ -524,7 +542,7 @@ V['admin:staff']={
           pinNote(st.name,id,pin,'PIN reset');window.scrollTo(0,0);
         }else if(act==='toggle'){await fs.doc('staff/'+id).update({active:st.active===false});toast(st.active===false?'Account switched on.':'Account switched off.')}
         else if(act==='del'){
-          if(S.confirmDel!==id){S.confirmDel=id;S.view.update();setTimeout(function(){if(S.confirmDel===id){S.confirmDel=null;S.view&&S.view.update&&S.view.update()}},4000);return}
+          if(S.confirmDel!==id){S.confirmDel=id;if(S.view&&S.view.update)S.view.update();setTimeout(function(){if(S.confirmDel===id){S.confirmDel=null;if(S.view&&S.view.update)S.view.update()}},4000);return}
           S.confirmDel=null;
           var bd=fs.batch();bd.delete(fs.doc('staff/'+id));bd.delete(fs.doc('loginmap/'+id));if(st.uid)bd.delete(fs.doc('uids/'+st.uid));
           await bd.commit();toast('Staff member deleted. Past attendance records are kept.');
@@ -550,7 +568,7 @@ V['admin:leaves']={
   mount:function(el){
     el.innerHTML='<div class="stack"><div class="seg" role="group" aria-label="Filter"><button type="button" data-f="pending">Pending</button><button type="button" data-f="all">All requests</button></div><section class="card"><div id="alist"></div></section></div>';
     el.onclick=async function(e){
-      var f=e.target.closest('[data-f]');if(f){S.lvFilter=f.dataset.f;S.view.update();return}
+      var f=e.target.closest('[data-f]');if(f){S.lvFilter=f.dataset.f;if(S.view&&S.view.update)S.view.update();return}
       var d=e.target.closest('[data-dec]');if(!d)return;var id=d.dataset.id;d.disabled=true;
       try{await fs.doc('leaves/'+id).update({status:d.dataset.dec,decidedAt:new Date().toISOString(),note:(S.notes[id]||'').trim()});delete S.notes[id];toast(d.dataset.dec==='approved'?'Leave approved.':'Leave rejected.','good')}
       catch(x){toast('Could not save the decision.','bad');d.disabled=false}
@@ -566,7 +584,7 @@ V['admin:leaves']={
       var s=names[l.staffId];
       return '<div class="leave"><div class="top"><div class="person"><b>'+esc(s?s.name:l.staffId)+'</b><span>'+esc(l.staffId)+'</span></div>'+lchip(l.status)+'</div>'+
       '<div><b>'+esc(l.type)+'</b> <span class="sub">'+esc(fdate(l.from))+(l.to!==l.from?' – '+esc(fdate(l.to)):'')+' · '+l.days+' day'+(l.days===1?'':'s')+(l.half?' (half day)':'')+'</span></div>'+
-      '<div class="reason">'+esc(l.reason)+'</div><div class="sub">Applied '+esc(fdate(String(l.appliedAt).slice(0,10)))+'</div>'+
+      '<div class="reason">'+esc(l.reason)+'</div><div class="sub">Applied '+esc(fdate(String(l.appliedAt||'').slice(0,10)))+'</div>'+
       (l.status==='pending'?'<div class="row"><input data-note="'+esc(l.id)+'" placeholder="Note for the staff member (optional)" maxlength="200" value="'+esc(S.notes[l.id]||'')+'" aria-label="Note"><button class="btn small" data-dec="approved" data-id="'+esc(l.id)+'" type="button">Approve</button><button class="btn small danger" data-dec="rejected" data-id="'+esc(l.id)+'" type="button">Reject</button></div>':(l.note?'<div class="sub">Your note: '+esc(l.note)+'</div>':''))+'</div>';
     }).join(''):'<p class="empty">'+(S.lvFilter==='all'?'No leave requests yet.':'No pending leave requests.')+'</p>';
   }
@@ -598,14 +616,14 @@ V['admin:reports']={
     el.innerHTML='<div class="stack"><div class="row" style="justify-content:space-between"><div class="stepper"><button class="btn ghost small" id="rp" type="button" aria-label="Previous month">‹</button><b id="rl"></b><button class="btn ghost small" id="rn" type="button" aria-label="Next month">›</button></div>'+
     '<div class="row"><button class="btn small ghost" id="rcs" type="button">Download summary (CSV)</button><button class="btn small ghost" id="rcd" type="button">Download day-wise (CSV)</button></div></div>'+
     '<section class="card"><div id="rtable"></div></section></div>';
-    function setMonth(k){S.repMonth=shiftMonth(S.repMonth,k);S.expanded={};subReport();S.view.update()}
+    function setMonth(k){S.repMonth=shiftMonth(S.repMonth,k);S.expanded={};subReport();if(S.view&&S.view.update)S.view.update()}
     $('#rp').onclick=function(){setMonth(-1)};
     $('#rn').onclick=function(){if(S.repMonth<mstr(new Date()))setMonth(1)};
-    $('#rtable').onclick=function(e){var t=e.target.closest('[data-x]');if(!t)return;var k=t.dataset.x;S.expanded[k]=!S.expanded[k];S.view.update()};
+    $('#rtable').onclick=function(e){var t=e.target.closest('[data-x]');if(!t)return;var k=t.dataset.x;S.expanded[k]=!S.expanded[k];if(S.view&&S.view.update)S.view.update()};
     $('#rcs').onclick=function(){
       var rows=[['Staff ID','Name','Designation','Present','Late','On leave','Absent','Working days up to today']];
       reportData().forEach(function(r){rows.push([r.s.id,r.s.name,r.s.designation||'',r.present,r.late,r.leave,r.absent,r.work])});
-      download('attendance-summary-'+S.repMonth+'.csv','﻿'+rows.map(function(r){return r.map(csvCell).join(',')}).join('\n'),'text/csv;charset=utf-8');
+      download('attendance-summary-'+S.repMonth+'.csv','\ufeff'+rows.map(function(r){return r.map(csvCell).join(',')}).join('\n'),'text/csv;charset=utf-8');
     };
     $('#rcd').onclick=function(){
       var rows=[['Staff ID','Name','Date','Day','Status','Check in','Check out','Late by (min)']];
@@ -613,7 +631,7 @@ V['admin:reports']={
         if(x.st.k==='future')return;var a=x.st.a;
         rows.push([r.s.id,r.s.name,x.d,DAYS[pdate(x.d).getDay()],CH[x.st.k][1],a?hm(a.inAt):'',a&&a.outAt?hm(a.outAt):'',a&&a.late?a.lateMins:'']);
       })});
-      download('attendance-daywise-'+S.repMonth+'.csv','﻿'+rows.map(function(r){return r.map(csvCell).join(',')}).join('\n'),'text/csv;charset=utf-8');
+      download('attendance-daywise-'+S.repMonth+'.csv','\ufeff'+rows.map(function(r){return r.map(csvCell).join(',')}).join('\n'),'text/csv;charset=utf-8');
     };
     subReport();
   },
@@ -698,6 +716,7 @@ V['admin:qr']={
     $('#pwForm').onsubmit=async function(e){
       e.preventDefault();var err=$('#pwErr');err.textContent='';
       var u=auth.currentUser,old=$('#pwOld').value,nw=$('#pwNew').value;
+      if(!u||!u.email){err.textContent='Not signed in.';return}
       if(nw.length<6){err.textContent='New password needs at least 6 characters.';return}
       try{
         await u.reauthenticateWithCredential(firebase.auth.EmailAuthProvider.credential(u.email,old));
@@ -741,7 +760,7 @@ function buildTabs(){
 function go(tab){
   stopScan();
   S.tab=tab;S.view=V[S.role+':'+tab];
-  buildTabs();$('#view').innerHTML='';S.view.mount($('#view'));S.view.update();window.scrollTo(0,0);
+  buildTabs();$('#view').innerHTML='';S.view.mount($('#view'));if(S.view.update)S.view.update();window.scrollTo(0,0);
 }
 function renderChrome(){
   if(!S.role)return;
@@ -791,7 +810,7 @@ function resetToLogin(msg){
   S.role=null;S.me=null;S.view=null;S.staff=null;S.settings=null;S.settingsLoaded=false;S.qrValue=null;S.qrLoaded=false;
   S.leaves=[];S.attMine=[];S.attToday=[];S.attMonth=[];S.attMonthFor='';S.scan=null;S.resolvedUid=null;S.seeding=false;
   $('#view').innerHTML='';
-  ['lid','lpin','aid','apw'].forEach(function(id){$('#'+id).value=''});
+  ['lid','lpin','aid','apw'].forEach(function(id){var el=$('#'+id);if(el)el.value=''});
   showLogin();applyLoginMode(S.lmode);
   $('#lerr').textContent='';$('#aerr').textContent='';
   msg=msg||S.keepMsg;
@@ -807,7 +826,7 @@ async function resolveRole(u){
   S.resolvedUid=u.uid;
   var email=(u.email||'').toLowerCase();
   try{
-    if(email.slice(-('@'+CFG.adminDomain).length)==='@'+CFG.adminDomain){
+    if(email.slice(-('@'+ADMIN_DOMAIN).length)==='@'+ADMIN_DOMAIN){
       try{await fs.doc('secret/qr').get()}catch(e){
         if(e&&e.code==='permission-denied'){S.lmode='admin';return rejectUser('This account is not allowed to open the admin panel.')}
         throw e;
@@ -856,7 +875,7 @@ async function doAdminLogin(e){
   if(!/^[a-z0-9_.-]{2,32}$/.test(id)){err.textContent='Admin ID or password is not correct.';return}
   $('#ago').disabled=true;
   try{
-    await auth.signInWithEmailAndPassword(id+'@'+CFG.adminDomain,pw);
+    await auth.signInWithEmailAndPassword(id+'@'+ADMIN_DOMAIN,pw);
     S.fails=0;$('#apw').value='';
   }catch(x){
     if(netErr(x))err.textContent='No internet connection. Please try again.';
